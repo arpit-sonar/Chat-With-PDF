@@ -21,7 +21,8 @@ allow_methods=["*"],
 allow_headers=["*"],
 )
 
-embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
+embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
 db = Chroma(persist_directory="./chroma_db", embedding_function=embeddings)
 llm = ChatGoogleGenerativeAI(model="gemini-3.5-flash",api_key=api_key)
 
