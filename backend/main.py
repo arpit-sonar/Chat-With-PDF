@@ -1,78 +1,95 @@
-from fastapi import FastAPI, File, UploadFile
-from pydantic import BaseModel
-from fastapi.middleware.cors import CORSMiddleware
-from langchain_community.vectorstores import Chroma
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-import os
+import os 
 import shutil
 from dotenv import load_dotenv
-load_dotenv()
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_community.vectorstores import Chroma
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-api_key = os.getenv("GOOGLE_API_KEY")
-app = FastAPI()
+load_dotenv();
+
+app = FastAPI(title = "Chat-With-PDF RAG API");
+
+origins = os.getenv("ALLOWED_ORIGINS", "").split(",")
 
 app.add_middleware(
     CORSMiddleware,
-allow_origins=["http://localhost:5173", "https://your-future-vercel-app-url.vercel.app"],    
-allow_methods=["*"],
-allow_headers=["*"],
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
-embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
-db = Chroma(persist_directory="./chroma_db", embedding_function=embeddings)
-llm = ChatGoogleGenerativeAI(model="gemini-3.5-flash",api_key=api_key)
+embeddings = GoogleGenerativeAIEmbeddings(model = "models/text-embedding-004")
+db = Chroma(embedding_function = embeddings, persist_directory = "./chroma_db")
 
-class Query(BaseModel):
+llm  = ChatGoogleGenerativeAI(model = "gemini-2.5", temperature = 0.2)
+
+class QueryRequest(BaseModel):
     question: str
-    document_id: str 
+    document_id: str
+
 
 @app.post("/upload")
 async def upload_pdf(file: UploadFile = File(...)):
-    file_path = f"temp_{file.filename}"
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-    
+    if not file.filename.endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported.")
+
+    temp_path = f"temp_{file.filename}"
+
     try:
-        loader = PyPDFLoader(file_path)
+        with open(temp_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        loader = PyPDFLoader(temp_path)
         documents = loader.load()
-        
+
         for doc in documents:
             doc.metadata["source"] = file.filename
-            
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-        chunks = text_splitter.split_documents(documents)
-        
-        db.add_documents(chunks)
-        
-        return {"filename": file.filename, "message": "Upload successful"}
-        
-    except Exception as e:
-        return {"error": str(e)}
-        
-    finally:
-        if os.path.exists(file_path):
-            os.remove(file_path)
 
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1000, 
+            chunk_overlap=200
+        )
+        chunks = text_splitter.split_documents(documents)
+
+        db.add_documents(chunks)
+
+        return {"filename": file.filename, "message": "Upload successful", "chunks": len(chunks)}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
+
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
 @app.post("/ask")
-async def ask_question(query: Query):
-    docs = db.similarity_search(
-        query.question, 
-        k=3,
-        filter={"source": query.document_id} 
-    )
-    
-    context = "\n".join([doc.page_content for doc in docs])
-    
-    prompt = (
-        f"Answer the question based strictly on this context:\n{context}\n\n"
-        f"Question: {query.question}"
-    )
-    
-    response = llm.invoke(prompt)
-    
-    return {"answer": response.content}
+async def ask_question(query: QueryRequest):
+    try:
+        docs = db.similarity_search(
+            query.question,
+            k=3,
+            filter={"source": query.document_id}
+        )
+
+        if not docs:
+            return {"answer": "No relevant information found in the selected document."}
+
+        context = "\n\n".join([doc.page_content for doc in docs])
+
+        prompt = (
+            "You are a helpful assistant answering questions based strictly on the provided document context.\n"
+            "If the answer cannot be derived directly from the context, state clearly that the document does not contain the answer.\n\n"
+            f"Context:\n{context}\n\n"
+            f"Question: {query.question}"
+        )
+
+        response = llm.invoke(prompt)
+        return {"answer": response.content}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
