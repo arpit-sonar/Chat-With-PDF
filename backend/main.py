@@ -13,7 +13,7 @@ load_dotenv();
 
 app = FastAPI(title = "Chat-With-PDF RAG API");
 
-origins = os.getenv("ALLOWED_ORIGINS", "").split(",")
+origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
 
 app.add_middleware(
     CORSMiddleware,
@@ -23,10 +23,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-embeddings = GoogleGenerativeAIEmbeddings(model = "models/text-embedding-004")
+embeddings = GoogleGenerativeAIEmbeddings(model = "models/gemini-embedding-2")
 db = Chroma(embedding_function = embeddings, persist_directory = "./chroma_db")
 
-llm  = ChatGoogleGenerativeAI(model = "gemini-2.5", temperature = 0.2)
+llm  = ChatGoogleGenerativeAI(model = "gemini-3.8-flash", temperature = 0.2)
 
 class QueryRequest(BaseModel):
     question: str
